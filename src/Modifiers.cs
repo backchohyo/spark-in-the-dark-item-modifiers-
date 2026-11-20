@@ -12,7 +12,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using ModLoader;
 
-[assembly: ModInfo("Modifiers", "1.6.0", Description = "장비에 빛바랜/은은한/찬란한 등급, 랜덤 추가 옵션, 유니크 특수 능력을 붙입니다.", SettingsNote = "바꾼 값은 바로 저장되고 적용됩니다. 확률·옵션 설정은 앞으로 새로 정해지는 장비부터, 유니크 능력 수치는 이미 가진 장비에도 바로 반영됩니다. 옵션·유니크의 체크를 끄면 새로 나오지 않을 뿐, 이미 붙은 것은 그대로 남습니다.")]
+[assembly: ModInfo("Modifiers", "1.7.1", Description = "장비에 빛바랜/은은한/찬란한 등급, 랜덤 추가 옵션, 유니크 특수 능력을 붙입니다.", SettingsNote = "바꾼 값은 바로 저장되고 적용됩니다. 확률·옵션 설정은 앞으로 새로 정해지는 장비부터, 유니크 능력 수치는 이미 가진 장비에도 바로 반영됩니다. 옵션·유니크의 체크를 끄면 새로 나오지 않을 뿐, 이미 붙은 것은 그대로 남습니다.")]
 
 namespace Modifiers
 {
@@ -91,6 +91,8 @@ namespace Modifiers
         public Func<string> DescF;
         public Func<bool> On;
         public Func<Affix[]> StatsF;
+        public bool BossOnly;       // 보스만 떨어뜨림 (무작위로 나오지 않음)
+        public string ItemName;     // 정해진 장비 이름 (보스 전용 장비)
         public string Desc { get { return DescF != null ? DescF() : ""; } }
         public Affix[] Stats { get { return StatsF != null ? StatsF() : new Affix[0]; } }
     }
@@ -233,6 +235,8 @@ namespace Modifiers
         [Setting(S6, "감소", Unit = "%", Min = 1, Max = 90, Inline = true)] public static int UGuardianPct = 12;
         [Setting(S6, "별빛의 가호 (공통)", Desc = "어둠 저항력이 오릅니다.")] public static bool UStarlightOn = true;
         [Setting(S6, "어둠", Unit = "%", Min = 1, Max = 100, Inline = true)] public static int UStarlightPct = 35;
+        [Setting(S6, "원혼의 불꽃 (보스 전용 무기)", Desc = "리빙 아머 발로르가 떨어뜨리는 대검의 능력. 맞은 적에게 출혈보다 강한 지속 피해와 이동 속도 감소를 겁니다. 맞은 몸에 푸른 불꽃이 붙습니다. 값은 이동 속도 감소량.", Unit = "%", Min = 0, Max = 50)] public static int USoulFlameSlow = 10;
+        [Setting(S6, "지속", Unit = "초", Min = 2, Max = 20, Inline = true)] public static int USoulFlameSec = 8;
         [Setting(S6, "해독의 축복 (공통)", Desc = "독 저항력이 오릅니다.")] public static bool UAntidoteOn = true;
         [Setting(S6, "독", Unit = "%", Min = 1, Max = 100, Inline = true)] public static int UAntidotePct = 50;
 
@@ -305,7 +309,8 @@ namespace Modifiers
         };
 
         public const int U_Bloodthirst = 1, U_Executioner = 2, U_Tempest = 3, U_Reaper = 4, U_Berserker = 5,
-            U_Undying = 6, U_Regeneration = 7, U_Shadow = 8, U_Thorns = 9, U_Guardian = 10, U_Starlight = 11, U_Antidote = 12, U_Gale = 13;
+            U_Undying = 6, U_Regeneration = 7, U_Shadow = 8, U_Thorns = 9, U_Guardian = 10, U_Starlight = 11, U_Antidote = 12, U_Gale = 13,
+            U_SoulFlame = 14, U_SoulBond = 15;   // 보스(리빙 아머 발로르) 전용
 
         static Affix[] St(AffixKind k, int v) { return new[] { new Affix { Kind = k, Value = v } }; }
 
@@ -327,7 +332,13 @@ namespace Modifiers
                 StatsF = () => St(AffixKind.DarknessResist, Cfg.UStarlightPct) },
             new UniqueDef { Id = U_Antidote,     Name = "해독의 축복",   KindMask = KindAny,    On = () => Cfg.UAntidoteOn, DescF = () => "독 저항력 +" + Cfg.UAntidotePct + "%",
                 StatsF = () => St(AffixKind.PoisonResist, Cfg.UAntidotePct) },
+            new UniqueDef { Id = U_SoulFlame,    Name = "원혼의 불꽃",   KindMask = KindWeapon, On = () => true, BossOnly = true, ItemName = BossSwordName,
+                DescF = () => "맞은 적을 푸른 원혼의 불꽃으로 태운다 (" + Cfg.USoulFlameSec + "초 동안 매초 최대 체력의 " + SoulFlamePctPerSec + "% 피해, 이동 속도 -" + Cfg.USoulFlameSlow + "%)" },
+            new UniqueDef { Id = U_SoulBond,     Name = "원혼의 결속",   KindMask = KindArmor,  On = () => true, BossOnly = true, ItemName = BossArmorName,
+                DescF = () => "원혼이 갑주를 붙들고 있어 내구도가 닳지 않는다" },
         };
+
+        public const string BossSwordName = "발로르의 비가", BossArmorName = "발로르의 빈 갑주";
 
         static AffixDef A(AffixKind k, string name, bool pct, int min, int max, int mask, CharSpecType t)
         {
@@ -414,18 +425,20 @@ namespace Modifiers
         }
 
         // ------------------------------------------------------------------ 굴림
-        static ModData Roll(HandItem h)
+        static ModData Roll(HandItem h) { return Roll(h, null); }
+
+        static ModData Roll(HandItem h, UniqueDef forced)
         {
             int kind = ItemKind(h);
             var d = new ModData();
 
-            UniqueDef unique = null;
-            if (Rng.NextDouble() * 100.0 < (_override ? _ovUnique : Cfg.UniqueChance))
+            UniqueDef unique = forced;
+            if (unique == null && Rng.NextDouble() * 100.0 < (_override ? _ovUnique : Cfg.UniqueChance))
             {
                 var pool = new List<UniqueDef>();
                 HashSet<int> blocked = BlockedUniques(h);
                 foreach (var u in Uniques)
-                    if ((u.KindMask & kind) != 0 && u.On() && !blocked.Contains(u.Id)) pool.Add(u);
+                    if ((u.KindMask & kind) != 0 && !u.BossOnly && u.On() && !blocked.Contains(u.Id)) pool.Add(u);
                 if (pool.Count > 0) unique = pool[Rng.Next(pool.Count)];
             }
 
@@ -570,6 +583,7 @@ namespace Modifiers
                 if (d.Unique != 0)
                 {
                     UniqueDef u = GetUnique(d.Unique);
+                    if (u != null && u.ItemName != null) return u.ItemName;
                     if (u != null) return "《" + u.Name + "》 " + result;
                 }
                 return "[" + TierName[d.Tier] + "] " + result;
@@ -685,30 +699,34 @@ namespace Modifiers
             return string.Join(", ", parts.ToArray());
         }
 
-        // MainCharPanel.ShowBuffs 안의 Character.Buffs 읽기를 대체: 장비 옵션 하나하나 대신 장비별 요약만 보여준다
-        static readonly List<Buff> _panelBuffs = new List<Buff>();
-        static int _panelFrame = -1;
-        static CharacterBase _panelChar;
-        [Hook(HookKind.ReplaceCall, "UI.Dialogs.MainCharPanel", "ShowBuffs", Params = 0, CallType = "CharacterBase", CallMethod = "get_Buffs", CallParams = 0, Count = 0)]
-        public static List<Buff> PanelBuffs(CharacterBase ch)
+        // MainCharPanel.ShowBuffs 뒤: 장비 옵션 하나하나(A/S/U)는 숨기고, 장비별 요약(I)만 보이게 한다.
+        // (예전 방식은 목록을 바꿔치기했는데, 게임 코드 안의 람다는 원래 목록을 봐서 같은 칸을 매번 새로 만드는 문제가 있었음)
+        [Hook(HookKind.Postfix, "UI.Dialogs.MainCharPanel", "ShowBuffs", Params = 0, Args = new[] { 0 })]
+        public static void AfterShowBuffs(UI.Dialogs.MainCharPanel p)
         {
-            List<Buff> all = ch.Buffs;
             try
             {
-                if (_panelFrame == Time.frameCount && _panelChar == ch) return _panelBuffs;
-                _panelFrame = Time.frameCount;
-                _panelChar = ch;
-                _panelBuffs.Clear();
-                for (int i = 0; i < all.Count; i++)
+                if (!p || !p.BuffPanel || !MainChar.Instance || MainChar.Instance.Character == null) return;
+                var hide = new HashSet<int>();
+                foreach (var b in MainChar.Instance.Character.Buffs)
                 {
-                    Buff b = all[i];
-                    string n = b ? b.Name : null;
-                    if (n != null && n.StartsWith(BuffPrefix, StringComparison.Ordinal) && !n.Equals(BuffPrefix + "I", StringComparison.Ordinal)) continue;
-                    _panelBuffs.Add(b);
+                    if (!b || b.Name == null || !b.Name.StartsWith(BuffPrefix, StringComparison.Ordinal)) continue;
+                    if (b.Name.Equals(BuffPrefix + "I", StringComparison.Ordinal)) continue;
+                    hide.Add(b.GetInstanceID());
                 }
-                return _panelBuffs;
+                var seen = new HashSet<int>();
+                foreach (var u in p.BuffPanel.GetComponentsInChildren<UsableItem>(true))
+                {
+                    if (!u || u.IsSpecial || u.Id == 0) continue;
+                    if (!seen.Add(u.Id)) { UnityEngine.Object.Destroy(u.gameObject); continue; }   // 예전 문제로 겹쳐 생긴 칸 정리
+                    if (!hide.Contains(u.Id) || u.transform.localScale == Vector3.zero) continue;
+                    // 끄면 게임이 '없는 칸'으로 보고 다시 만들기 때문에, 켜 둔 채로 크기만 0 으로
+                    u.transform.localScale = Vector3.zero;
+                    var le = u.GetComponent<LayoutElement>() ?? u.gameObject.AddComponent<LayoutElement>();
+                    le.ignoreLayout = true;
+                }
             }
-            catch (Exception e) { LogOnce(e); return all; }
+            catch (Exception e) { LogOnce(e); }
         }
 
         // MainCharPanel.ShowSpecs 뒤: 독/어둠 저항력을 능력치 표의 빈칸(장비 무게 옆)으로 옮긴다
@@ -812,6 +830,7 @@ namespace Modifiers
                     Cleanup();
                 }
                 SyncHero(mc, ch);
+                TickFlames();
                 if ((_activeUniques & (1 << U_Regeneration)) != 0 && !ch.IsDead)
                 {
                     CharSpec hp = ch.GetSpec(CharSpecType.Health);
@@ -1038,6 +1057,121 @@ namespace Modifiers
                 });
         }
 
+        // ------------------------------------------------------------------ 보스 전용 장비 (보스 모드가 부름)
+        // 정해진 유니크 능력과 일반 유니크와 같은 개수의 추가 옵션을 붙인다.
+        public static bool MakeBossUnique(HandItem h, int uniqueId)
+        {
+            try
+            {
+                UniqueDef u = GetUnique(uniqueId);
+                if (!h || u == null) return false;
+                Data[h] = Roll(h, u);
+                return true;
+            }
+            catch (Exception e) { LogOnce(e); return false; }
+        }
+
+        // 원혼의 결속: 이 갑옷은 내구도가 닳지 않는다 (HandItem.Damaged 앞부분, true 면 원본 건너뜀)
+        [Hook(HookKind.PrefixSkip, "HandItems.HandItem", "Damaged", Params = 3, Args = new[] { 0 })]
+        public static bool NoWear(HandItem h)
+        {
+            ModData d = Get(h);
+            return d != null && d.Unique == U_SoulBond;
+        }
+
+        // 원혼의 불꽃: 이 무기로 몬스터를 베면 몸에 푸른 불꽃이 붙어 타오른다 (지속 피해 + 둔화)
+        //  불꽃 모양은 휴식처 화톳불의 불 효과를 복사해 푸르게 바꾼 것
+        class Flame { public float Until, Last; public GameObject Fx; public float Move = -1f, Run = -1f; public bool Logged; }
+        static readonly Dictionary<Creature, Flame> Flames = new Dictionary<Creature, Flame>();
+        public const float SoulFlamePctPerSec = 1.8f;   // 최대 체력의 %/초 (게임의 강한 출혈은 1.5%/초)
+
+        [Hook(HookKind.Postfix, "Creatures.Creature", "Damaged", ParamTypes = "CharacterBase,Weapon,AttackDirection", Args = new[] { 0, 1, 2 })]
+        public static DamageType FlameAfter(DamageType result, Creature c, CharacterBase attacker, Weapon w)
+        {
+            try
+            {
+                if (result == DamageType.None || !c || c.IsDead || !IsHero(attacker) || !ItemHas(w, U_SoulFlame)) return result;
+                Flame f;
+                if (!Flames.TryGetValue(c, out f)) { f = new Flame { Last = Time.time }; Flames[c] = f; SetFlameSlow(c, f, true); }
+                f.Until = Time.time + Cfg.USoulFlameSec;
+                if (!f.Fx)
+                {
+                    Transform at = c.BloodPoint ? c.BloodPoint : c.transform;
+                    f.Fx = BlueFire.Attach(at, 0.55f);
+                }
+                try { EffectsManager.SpawnPointLightFlash(c.transform.position + Vector3.up * 1.2f, BlueFire.Color, 2.2f, 0.05f, 0.6f, 2.5f, true, true, 0.05f); } catch { }
+            }
+            catch (Exception e) { LogOnce(e); }
+            return result;
+        }
+
+        static void SetFlameSlow(Creature c, Flame f, bool on)
+        {
+            Animator a = c.GetComponent<Animator>();
+            if (!a) return;
+            float k = 1f - Cfg.USoulFlameSlow / 100f;
+            foreach (var p in a.parameters)
+            {
+                if (p.type != AnimatorControllerParameterType.Float) continue;
+                if (p.name == "MoveSpeed")
+                {
+                    if (on) { f.Move = a.GetFloat(p.nameHash); a.SetFloat(p.nameHash, f.Move * k); }
+                    else if (f.Move >= 0f) a.SetFloat(p.nameHash, f.Move);
+                }
+                else if (p.name == "RunSpeed")
+                {
+                    if (on) { f.Run = a.GetFloat(p.nameHash); a.SetFloat(p.nameHash, f.Run * k); }
+                    else if (f.Run >= 0f) a.SetFloat(p.nameHash, f.Run);
+                }
+            }
+        }
+
+        static void EndFlame(Creature c, Flame f)
+        {
+            Flames.Remove(c);
+            if (f.Fx) BlueFire.Fade(f.Fx);
+            if (c && !c.IsDead) SetFlameSlow(c, f, false);
+        }
+
+        // 영웅 쪽 0.2초 주기에서 불린다: 불꽃 피해를 주고, 끝난 불꽃은 끈다
+        static void TickFlames()
+        {
+            if (Flames.Count == 0) return;
+            var list = new List<KeyValuePair<Creature, Flame>>(Flames);
+            foreach (var kv in list)
+            {
+                Creature c = kv.Key; Flame f = kv.Value;
+                if (!c || c.IsDead || f.Until <= Time.time) { EndFlame(c, f); continue; }
+                float dt = Mathf.Clamp(Time.time - f.Last, 0f, 1f);
+                f.Last = Time.time;
+                CharacterBase ch = c.Character;
+                CharSpec hp = ch ? ch.GetSpec(CharSpecType.Health) : null;
+                if (hp == null || hp.MaxValue <= 0f || dt <= 0f) continue;
+                float dmg = hp.MaxValue * SoulFlamePctPerSec / 100f * dt;
+                float before = hp.CurrentValue;
+                ch.ReduceHealth(dmg);          // 다른 모드의 체력 배율(보스·접두사 몬스터)도 똑같이 적용된다
+                if (!f.Logged) { f.Logged = true; Debug.Log("[Modifiers] 원혼의 불꽃: " + ch.CharacterName + " 체력 " + before.ToString("0.0") + " → " + hp.CurrentValue.ToString("0.0")); LogFlame(ch, before, hp.CurrentValue, hp.MaxValue); }
+                if (hp.CurrentValue <= 0f && !c.IsDead)
+                {
+                    try
+                    {
+                        Necropolis.Instance.CurrentHero.AddKilledCreature(ch, CreatureDeathType.Injures);
+                        Bestiary.Instance.IncrementKilledCount(ch.CharacterName);
+                    }
+                    catch { }
+                    c.Death(true);
+                    EndFlame(c, f);
+                }
+            }
+        }
+
+        static int _flameLogs;
+        static void LogFlame(CharacterBase ch, float before, float after, float max)
+        {
+            if (_flameLogs++ >= 10) return;
+            try { ModLoader.Loader.Log("[Modifiers] 원혼의 불꽃 피해 확인: " + ch.CharacterName + " 체력 " + before.ToString("0.0") + " → " + after.ToString("0.0") + " (최대 " + max.ToString("0") + ", 초당 " + SoulFlamePctPerSec + "%)"); } catch { }
+        }
+
         // ------------------------------------------------------------------ 다른 모드용: 지정한 확률로 바로 등급을 정한다
         // (MobModifiers 의 보상 장비 등). 이미 등급이 있으면 그대로 둔다. 적용되면 true.
         public static bool ForceRoll(HandItem h, int weightLow, int weightMid, int weightHigh, float uniqueChance)
@@ -1062,6 +1196,105 @@ namespace Modifiers
         static void LogOnce(Exception e)
         {
             if (_logged++ < 20) Debug.LogWarning("[Modifiers] " + e);
+        }
+    }
+
+    // 휴식처 화톳불의 불 효과를 복사해 푸른 원혼의 불꽃으로 쓴다
+    public static class BlueFire
+    {
+        public static readonly Color Color = new Color(0.35f, 0.65f, 1f, 1f);
+        static GameObject _tpl;
+
+        static GameObject Template()
+        {
+            if (_tpl) return _tpl;
+            try
+            {
+                foreach (var sp in UnityEngine.Object.FindObjectsOfType<Actions.SleepingPlace>(true))
+                {
+                    if (!sp || !sp.BonfireActive || !sp.BonfireActive.Fire) continue;
+                    var src = sp.BonfireActive.Fire.gameObject;
+                    _tpl = UnityEngine.Object.Instantiate(src);
+                    _tpl.name = "SoulFireTemplate";
+                    _tpl.SetActive(false);
+                    UnityEngine.Object.DontDestroyOnLoad(_tpl);
+                    foreach (var mb in _tpl.GetComponentsInChildren<MonoBehaviour>(true)) UnityEngine.Object.DestroyImmediate(mb);
+                    foreach (var au in _tpl.GetComponentsInChildren<AudioSource>(true)) UnityEngine.Object.DestroyImmediate(au);
+                    Recolor(_tpl);
+                    break;
+                }
+            }
+            catch (Exception e) { Debug.LogWarning("[Modifiers] 푸른 불꽃 준비 실패: " + e.Message); }
+            return _tpl;
+        }
+
+        static void Recolor(GameObject go)
+        {
+            foreach (var ps in go.GetComponentsInChildren<ParticleSystem>(true))
+            {
+                var main = ps.main;
+                main.startColor = new ParticleSystem.MinMaxGradient(new Color(0.55f, 0.85f, 1f, 1f), new Color(0.15f, 0.40f, 1f, 1f));
+                main.scalingMode = ParticleSystemScalingMode.Hierarchy;
+                var col = ps.colorOverLifetime;
+                if (col.enabled)
+                {
+                    var g = new Gradient();
+                    g.SetKeys(new[] { new GradientColorKey(new Color(0.75f, 0.92f, 1f), 0f), new GradientColorKey(new Color(0.25f, 0.55f, 1f), 0.5f), new GradientColorKey(new Color(0.05f, 0.15f, 0.6f), 1f) },
+                              new[] { new GradientAlphaKey(0f, 0f), new GradientAlphaKey(1f, 0.12f), new GradientAlphaKey(0.8f, 0.6f), new GradientAlphaKey(0f, 1f) });
+                    col.color = new ParticleSystem.MinMaxGradient(g);
+                }
+                var r = ps.GetComponent<Renderer>();
+                if (r)
+                {
+                    var mats = r.materials;
+                    foreach (var m in mats)
+                    {
+                        if (!m) continue;
+                        if (m.HasProperty("_TintColor")) m.SetColor("_TintColor", new Color(0.35f, 0.6f, 1f, 0.6f));
+                        if (m.HasProperty("_Color")) m.SetColor("_Color", new Color(0.45f, 0.75f, 1f, m.GetColor("_Color").a));
+                        if (m.HasProperty("_EmissionColor")) m.SetColor("_EmissionColor", new Color(0.2f, 0.5f, 1.4f));
+                    }
+                    r.materials = mats;
+                }
+            }
+            foreach (var l in go.GetComponentsInChildren<Light>(true)) l.color = Color;
+        }
+
+        // parent 에 붙인다 (scale: 화톳불 크기 대비)
+        public static GameObject Attach(Transform parent, float scale)
+        {
+            var tpl = Template();
+            GameObject go;
+            if (tpl)
+            {
+                go = UnityEngine.Object.Instantiate(tpl, parent, false);
+                go.name = "SoulFire";
+                go.transform.localPosition = Vector3.zero;
+                go.transform.localRotation = Quaternion.identity;
+                Vector3 ps = parent.lossyScale;
+                float inv = ps.x > 0.01f ? 1f / ps.x : 1f;
+                go.transform.localScale = Vector3.one * scale * inv;
+                go.SetActive(true);
+                foreach (var p in go.GetComponentsInChildren<ParticleSystem>(true)) p.Play();
+            }
+            else
+            {
+                go = new GameObject("SoulFire");
+                go.transform.SetParent(parent, false);
+            }
+            var lg = new GameObject("SoulFireLight");
+            lg.transform.SetParent(go.transform, false);
+            var l = lg.AddComponent<Light>();
+            l.type = LightType.Point; l.color = Color; l.range = 3f; l.intensity = 1.6f; l.shadows = LightShadows.None;
+            return go;
+        }
+
+        public static void Fade(GameObject go)
+        {
+            if (!go) return;
+            foreach (var p in go.GetComponentsInChildren<ParticleSystem>(true)) p.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+            foreach (var l in go.GetComponentsInChildren<Light>(true)) l.enabled = false;
+            UnityEngine.Object.Destroy(go, 2.5f);
         }
     }
 }
